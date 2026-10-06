@@ -700,7 +700,7 @@ const isReal=p=>cache[p]&&!blanks.has(cache[p]);
 function ensureLoaded(){
   if(!db)return;
   const mon=mondayOf(cur);
-  const want=["days/"+cur,"sync/"+cur,"weeks/"+mon,"finance/"+finMonth,"finance/"+shiftMonth(finMonth,-1)].concat([0,1,2,3,4,5,6].map(i=>"days/"+addDays(mon,i))).concat([0,1,2,3,4,5,6].map(i=>"sync/"+addDays(mon,i)));
+  const want=["days/"+cur,"sync/"+cur,"weeks/"+mon,"finance/"+finMonth,"finance/"+shiftMonth(finMonth,-1)].concat([0,1,2,3,4,5,6].map(i=>"days/"+addDays(mon,i))).concat([-7,-6,-5,-4,-3,0,1,2,3,4,5,6].map(i=>"sync/"+addDays(mon,i)));
   want.forEach(p=>{
     if(fetched[p]||isReal(p))return;fetched[p]=true;
     db.doc(p).get().then(s=>{if(s.exists&&!dirty[p]&&!isReal(p)){cache[p]=JSON.parse(JSON.stringify(s.data()));scheduleRender();}}).catch(()=>{fetched[p]=false;});
@@ -879,6 +879,7 @@ function rWeek(){
     <section class="panel"><div class="panel-h"><div><span class="eyebrow">Weekly pipeline</span><h2>Telgorithm migrations</h2>${(wk.files||[]).some(f=>f.kind==="Migration list")?`<span class="small muted">CSV attached below</span>`:""}</div>${m.sent?`<span class="pill good">✓ Sent</span>`:`<span class="pill warn">⚠ Due Wed 6 PM</span>`}</div>${pipe}</section>
     <section class="panel"><div class="panel-h"><h2>10DLC registrations</h2></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">${dlc("mon","Monday")}${dlc("fri","Friday")}</div></section>
   </div>
+  ${rTeamWeek()}
   ${rFiles()}
   <section class="panel" style="margin-top:20px"><div class="panel-h"><div><span class="eyebrow">Goal: most sent in every Friday</span><h2>Disputes</h2></div><span class="small muted mono">${dsp.filter(x=>x.status==="open").length} open · ${money(openAmt)}</span></div>
     ${dsp.length?`<div class="tbl-wrap"><table><thead><tr><th>Dispute</th><th class="num">Amount</th><th>Due</th><th>State</th><th>Status</th><th></th></tr></thead><tbody>${dRows}</tbody></table></div>`:`<p class="muted small">No disputes tracked yet. Add them as you find them in Stripe, with their submission deadline.</p>`}
@@ -1004,21 +1005,75 @@ What's happening:
 ${b.details||"n/a"}
 ${b.workaround?"\nWorkaround given: "+b.workaround+"\n":""}${b.devnotes?"\nNotes: "+b.devnotes+"\n":""}`;}
 function syncStamp(date){const sd=syncDoc(date);return sd&&sd.syncedAt?"synced "+fmtT(sd.syncedAt):"waiting for first sync";}
+/* ---------- help desk analytics ---------- */
+const median=a=>{a=a.filter(v=>v!=null&&!isNaN(v)).sort((x,y)=>x-y);if(!a.length)return null;const m=a.length>>1;return a.length%2?a[m]:(a[m-1]+a[m])/2;};
+const fmtMin=v=>v==null?"–":v<1?"<1 min":v<60?Math.round(v)+" min":v<1440?(v/60).toFixed(1)+" h":(v/1440).toFixed(1)+" d";
+const fmtHrs=m=>m==null?"–":m<60?Math.round(m)+"m":Math.floor(m/60)+"h "+String(Math.round(m%60)).padStart(2,"0")+"m";
+function activeMinutes(ts){ts=ts.slice().sort((a,b)=>a-b);if(!ts.length)return 0;let tot=0,s0=ts[0],prev=ts[0];
+  for(let i=1;i<ts.length;i++){if(ts[i]-prev>30*60){tot+=(prev-s0)+600;s0=ts[i];}prev=ts[i];}tot+=(prev-s0)+600;return tot/60;}
+/* stats per teammate across a set of dates */
+function teamStats(dates){
+  const per={};const team={handled:0,closed:0,newToday:0,first:[],reply:[],close:[],days:0,waiting:null};
+  const get=id=>per[id]=per[id]||{id:String(id),convs:new Set(),handled:0,replies:0,closed:0,notes:0,assigned:null,first:[],reply:[],close:[],active:0,days:{},firstAt:null,lastAt:null,hasEvents:false};
+  dates.forEach(ds=>{const sd=syncDoc(ds);const ic=sd&&sd.intercom;if(!ic)return;team.days++;
+    team.handled+=ic.handled||0;team.closed+=ic.closed||0;team.newToday+=ic.newToday||0;team.waiting=ic.waiting;
+    const ev=ic.events||[];const byA={};
+    ev.forEach(e=>{const p=get(e.a);p.hasEvents=true;p.convs.add(ds+":"+e.c);(byA[e.a]=byA[e.a]||[]).push(e.t);
+      if(e.k==="reply"){p.replies++;if(e.rt!=null){p.reply.push(e.rt/60);team.reply.push(e.rt/60);}if(e.ft!=null){p.first.push(e.ft/60);team.first.push(e.ft/60);}}
+      else if(e.k==="close"){p.closed++;if(e.ct!=null){p.close.push(e.ct/60);team.close.push(e.ct/60);}}
+      else if(e.k==="note")p.notes++;});
+    Object.entries(byA).forEach(([a,ts])=>{const p=get(a);const m=activeMinutes(ts);p.active+=m;p.days[ds]=m;
+      const mn=Math.min(...ts),mx=Math.max(...ts);if(dates.length===1){p.firstAt=mn;p.lastAt=mx;}});
+    (ic.byAdmin||[]).forEach(b=>{const p=get(b.id);if(!p.hasEvents){p.handled+=b.handled||0;p.closed+=b.closed||0;if(b.medianFirstReplyMin!=null)p.first.push(b.medianFirstReplyMin);}p.assigned=b.assigned;});
+    if(!ev.length&&ic.medianFirstReplyMin!=null)team.first.push(ic.medianFirstReplyMin);
+  });
+  const rows=Object.values(per).map(p=>({id:p.id,handled:p.hasEvents?p.convs.size:p.handled,replies:p.replies,closed:p.closed,notes:p.notes,assigned:p.assigned,
+    first:median(p.first),reply:median(p.reply),close:median(p.close),active:p.hasEvents?p.active:null,days:p.days,firstAt:p.firstAt,lastAt:p.lastAt,hasEvents:p.hasEvents}));
+  return{rows,team:{handled:team.handled,closed:team.closed,newToday:team.newToday,waiting:team.waiting,first:median(team.first),reply:median(team.reply),close:median(team.close),days:team.days}};
+}
+const tName=id=>adminNames()[id]||"Teammate "+id;
+const tclock=u=>u?new Date(u*1000).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}):"";
 function rHelpdesk(date){
-  const sd=syncDoc(date);const ic=sd&&sd.intercom;const names=adminNames();const me=myAdminId();
+  const sd=syncDoc(date);const ic=sd&&sd.intercom;const me=myAdminId();
   if(!ic)return `<section class="panel"><div class="panel-h"><div><span class="eyebrow">Intercom · ${syncStamp(date)}</span><h2>Help desk</h2></div></div><p class="muted small" style="margin:0">Chat counts for you and the team appear after the next hourly sync.</p></section>`;
-  const rows=(ic.byAdmin||[]).slice().sort((a,b)=>(b.handled||0)-(a.handled||0));
-  const mine=rows.find(a=>String(a.id)===me)||{};
-  const mm=v=>v==null?"–":v<60?Math.round(v)+" min":(v/60).toFixed(1)+" h";
+  const T=teamStats([date]);const rows=T.rows.filter(r=>r.handled||r.replies||r.closed||r.assigned).sort((a,b)=>(b.replies||b.handled)-(a.replies||a.handled));
+  const mine=rows.find(a=>a.id===me)||{};const anyEv=rows.some(r=>r.hasEvents);
   return `<section class="panel"><div class="panel-h"><div><span class="eyebrow">Intercom · ${syncStamp(date)}</span><h2>Help desk</h2></div><span class="pill ${ic.waiting>0?"warn":"good"}">${ic.waiting||0} waiting on a reply</span></div>
-    <div class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:12px">
-      <div class="kpi"><span class="l">Your chats</span><span class="v">${mine.handled||0}</span><span class="l">${mine.closed||0} closed</span></div>
-      <div class="kpi"><span class="l">Team chats</span><span class="v">${ic.handled||0}</span><span class="l">${ic.newToday||0} new today</span></div>
-      <div class="kpi"><span class="l">Closed</span><span class="v">${ic.closed||0}</span><span class="l">by the team</span></div>
-      <div class="kpi"><span class="l">First reply</span><span class="v" style="font-size:20px">${mm(ic.medianFirstReplyMin)}</span><span class="l">median</span></div></div>
-    ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Teammate</th><th class="num">Chats</th><th class="num">Assigned now</th><th class="num">Closed</th><th class="num">First reply</th></tr></thead><tbody>
-      ${rows.map(a=>`<tr${String(a.id)===me?' class="today"':""}><td>${esc(names[a.id]||a.name||"Teammate "+a.id)}</td><td class="num">${a.handled||0}</td><td class="num">${a.assigned||0}</td><td class="num">${a.closed||0}</td><td class="num">${mm(a.medianFirstReplyMin)}</td></tr>`).join("")}</tbody></table></div>`:""}
+    <div class="kpis" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:12px">
+      <div class="kpi"><span class="l">Your chats</span><span class="v">${mine.handled||0}</span><span class="l">${mine.replies||0} replies · ${mine.closed||0} closed</span></div>
+      <div class="kpi"><span class="l">Team chats</span><span class="v">${T.team.handled}</span><span class="l">${T.team.newToday} new · ${T.team.closed} closed</span></div>
+      <div class="kpi"><span class="l">First reply</span><span class="v" style="font-size:20px">${fmtMin(T.team.first)}</span><span class="l">median, team</span></div>
+      <div class="kpi"><span class="l">Reply time</span><span class="v" style="font-size:20px">${fmtMin(T.team.reply)}</span><span class="l">median per reply</span></div>
+      <div class="kpi"><span class="l">Time to close</span><span class="v" style="font-size:20px">${fmtMin(T.team.close)}</span><span class="l">median, opened → closed</span></div></div>
+    ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Teammate</th><th class="num">Chats</th><th class="num">Replies</th><th class="num">Closed</th><th class="num">First reply</th><th class="num">Reply time</th><th class="num">Time to close</th><th class="num">Active (est.)</th><th>On from–to</th><th class="num">Assigned now</th></tr></thead><tbody>
+      ${rows.map(a=>`<tr${a.id===me?' class="today"':""}><td>${esc(tName(a.id))}</td><td class="num">${a.handled||0}</td><td class="num">${a.hasEvents?a.replies:"–"}</td><td class="num">${a.closed||0}</td><td class="num">${fmtMin(a.first)}</td><td class="num">${fmtMin(a.reply)}</td><td class="num">${fmtMin(a.close)}</td><td class="num">${fmtHrs(a.active)}</td><td class="small mono">${a.firstAt?tclock(a.firstAt)+"–"+tclock(a.lastAt):"–"}</td><td class="num">${a.assigned??"–"}</td></tr>`).join("")}</tbody></table></div>
+      <p class="small muted" style="margin:8px 0 0">${anyEv?"Active time is an estimate from each person's Intercom activity (replies, notes, assignments, closes): actions less than 30 minutes apart count as one working stretch, plus 10 minutes per stretch. It is not their logged-in time.":"Replies, reply times and active time fill in from the next sync."}</p>`:""}
   </section>`;
+}
+function rTeamWeek(){
+  const mon=mondayOf(cur);const days=[0,1,2,3,4].map(i=>addDays(mon,i));const prev=days.map(d=>addDays(d,-7));
+  const A=teamStats(days),B=teamStats(prev);
+  if(!A.team.days)return `<section class="panel" style="margin-top:20px"><div class="panel-h"><div><span class="eyebrow">Intercom</span><h2>Help desk this week</h2></div></div><p class="muted small" style="margin:0">Help desk numbers appear once the hourly sync has run on a day this week.</p></section>`;
+  const bmap=Object.fromEntries(B.rows.map(r=>[r.id,r]));const me=myAdminId();
+  const d=(a,b,lowerBetter,fmt)=>{if(a==null||b==null||!B.team.days)return "";const x=a-b;if(Math.abs(x)<0.05)return `<span class="delta muted">same</span>`;const good=lowerBetter?x<0:x>0;return `<span class="delta ${good?"down":"up"}">${x>0?"▲":"▼"} ${fmt(Math.abs(x))}</span>`;};
+  const num=v=>String(Math.round(v));
+  const rows=A.rows.filter(r=>r.handled||r.replies||r.closed).sort((a,b)=>(b.active||0)-(a.active||0)||(b.handled-a.handled));
+  const cell=(v,f,pv,lb,df)=>`<td class="num">${f(v)}<br>${d(v,pv,lb,df||f)}</td>`;
+  return `<section class="panel" style="margin-top:20px"><div class="panel-h"><div><span class="eyebrow">Intercom · week of ${fmtShort(mon)} vs week before</span><h2>Help desk this week</h2></div>
+      <span class="small muted">▲▼ vs previous week · green = better</span></div>
+    <div class="kpis" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-bottom:12px">
+      <div class="kpi"><span class="l">Team chats</span><span class="v">${A.team.handled}</span><span class="l">${d(A.team.handled,B.team.handled,false,num)||"&nbsp;"}</span></div>
+      <div class="kpi"><span class="l">Closed</span><span class="v">${A.team.closed}</span><span class="l">${d(A.team.closed,B.team.closed,false,num)||"&nbsp;"}</span></div>
+      <div class="kpi"><span class="l">First reply</span><span class="v" style="font-size:20px">${fmtMin(A.team.first)}</span><span class="l">${d(A.team.first,B.team.first,true,fmtMin)||"median"}</span></div>
+      <div class="kpi"><span class="l">Reply time</span><span class="v" style="font-size:20px">${fmtMin(A.team.reply)}</span><span class="l">${d(A.team.reply,B.team.reply,true,fmtMin)||"median"}</span></div>
+      <div class="kpi"><span class="l">Time to close</span><span class="v" style="font-size:20px">${fmtMin(A.team.close)}</span><span class="l">${d(A.team.close,B.team.close,true,fmtMin)||"median"}</span></div></div>
+    <div class="tbl-wrap"><table><thead><tr><th>Teammate</th><th class="num">Chats</th><th class="num">Replies</th><th class="num">Closed</th><th class="num">First reply</th><th class="num">Reply time</th><th class="num">Time to close</th><th class="num">Active (est.)</th>${days.map(ds=>`<th class="num">${DN[dow(ds)]}</th>`).join("")}</tr></thead><tbody>
+      ${rows.map(r=>{const p=bmap[r.id]||{};return `<tr${r.id===me?' class="today"':""}><td>${esc(tName(r.id))}</td>
+        ${cell(r.handled,num,p.handled,false)}${cell(r.replies,num,p.replies,false)}${cell(r.closed,num,p.closed,false)}
+        ${cell(r.first,fmtMin,p.first,true)}${cell(r.reply,fmtMin,p.reply,true)}${cell(r.close,fmtMin,p.close,true)}
+        ${cell(r.active,fmtHrs,p.active,false)}
+        ${days.map(ds=>`<td class="num small">${r.days[ds]!=null?fmtHrs(r.days[ds]):"–"}</td>`).join("")}</tr>`;}).join("")}</tbody></table></div>
+    <p class="small muted" style="margin:8px 0 0">Active time is estimated from Intercom activity, not logged-in time. Days before the activity tracking started show chat counts only.</p></section>`;
 }
 function rBugMini(){
   const ob=openBugs();
@@ -1239,7 +1294,7 @@ function reportText(){
   L.push(`CHECKLIST (${st.done}/${st.tasks})`);R.done.forEach(t=>L.push("  ✓ "+t.label));R.open.forEach(t=>L.push("  ○ "+t.label));L.push("");
   const rcs=allCalls(cur).filter(c=>c.status!=="upcoming");
   L.push(`CALLS (${st.calls})`);rcs.forEach(c=>{L.push(`  ${c.time||""} ${c.agent||"Agent"}${c.status==="no-show"?" (no-show)":""} · ${c.type||"–"} · ${c.outcome||"–"}${c.impact?" · "+money(c.impact):""}`);if(c.reason)L.push("     Booked for: "+c.reason);if(c.summary)L.push("     Summary: "+c.summary);if(c.note)L.push("     Note: "+c.note);});if(!rcs.length)L.push("  None");L.push("");
-  const sic=syncDoc(cur)&&syncDoc(cur).intercom;if(sic){const nm=adminNames();L.push("HELP DESK (INTERCOM)",`  Team chats: ${sic.handled||0} · new today: ${sic.newToday||0} · closed: ${sic.closed||0} · waiting: ${sic.waiting||0}`);(sic.byAdmin||[]).forEach(a=>L.push(`  ${nm[a.id]||a.name||a.id}: ${a.handled||0} chats, ${a.closed||0} closed`));L.push("");}
+  const sic=syncDoc(cur)&&syncDoc(cur).intercom;if(sic){const nm=adminNames();L.push("HELP DESK (INTERCOM)",`  Team chats: ${sic.handled||0} · new today: ${sic.newToday||0} · closed: ${sic.closed||0} · waiting: ${sic.waiting||0}`);const T=teamStats([cur]);L.push(`  First reply ${fmtMin(T.team.first)} · reply time ${fmtMin(T.team.reply)} · time to close ${fmtMin(T.team.close)} (medians)`);T.rows.filter(a=>a.handled||a.replies||a.closed).forEach(a=>L.push(`  ${nm[a.id]||a.id}: ${a.handled||0} chats, ${a.hasEvents?a.replies+" replies, ":""}${a.closed||0} closed · first reply ${fmtMin(a.first)} · reply ${fmtMin(a.reply)} · close ${fmtMin(a.close)} · active ~${fmtHrs(a.active)}${a.firstAt?" ("+tclock(a.firstAt)+"–"+tclock(a.lastAt)+")":""}`));L.push("");}
   L.push(`UNPLANNED WORK (${(d.side||[]).length})`);(d.side||[]).forEach(x=>L.push(`  ${x.type}${x.note?" · "+x.note:""}`));if(!(d.side||[]).length)L.push("  None");L.push("");
   L.push("BUG REPORTS");R.opened.forEach(b=>L.push(`  Opened: ${bugNo(b)} ${b.title} (${b.type})`));R.closed.forEach(b=>L.push(`  Closed: ${bugNo(b)} ${b.title}`));L.push(`  ${R.openNow.length} open in total`,"");
   L.push("WINS",d.wins?d.wins.replace(/^/gm,"  "):"  —","","BLOCKERS / CARRY OVER",d.blockers?d.blockers.replace(/^/gm,"  "):"  —");
