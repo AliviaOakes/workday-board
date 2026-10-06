@@ -671,7 +671,7 @@ function dayStats(date){
   const resolved=calls.filter(c=>c.outcome==="Resolved").length;
   const sd=syncDoc(date);const ic=sd&&sd.intercom;const me=myAdminId();
   const mine=ic&&me?((ic.byAdmin||[]).find(a=>String(a.id)===me)||{}):{};
-  const noShows=allCalls(date).filter(c=>c.status==="no-show").length;
+  const noShows=allCalls(date).filter(c=>c.status==="no-show"||c.status==="missed").length;
   return{tasks:tasks.length,done,logged,byCat,calls:calls.length,resolved,impact,side:(d.side||[]).length,chats:ic?(mine.handled||0):null,teamChats:ic?ic.handled||0:null,noShows};
 }
 function nextDeadline(){
@@ -746,7 +746,7 @@ function rToday(){
   if(w===3){const wk=doc("week");checks+=`<div class="group-h">Migration handoff</div><p class="small" style="margin:0 6px">${wk.mig&&wk.mig.sent?`<span class="pill good">✓ Sent to Telgorithm</span>`:`<span class="pill warn">⚠ Due to Telgorithm by 6:00 PM</span>`} Track it on the Week tab.</p>`;}
   // calls
   const calls=allCalls(cur);const sdoc=syncDoc(cur);
-  const stPill=st=>st==="upcoming"?`<span class="pill">Upcoming</span>`:st==="live"?`<span class="pill acc">● In progress</span>`:st==="no-show"?`<span class="pill warn">⚠ No-show</span>`:`<span class="pill good">✓ Done</span>`;
+  const stPill=st=>st==="upcoming"?`<span class="pill">Upcoming</span>`:st==="live"?`<span class="pill acc">● In progress</span>`:st==="no-show"?`<span class="pill warn">⚠ No-show</span>`:st==="missed"?`<span class="pill">Didn't start</span>`:`<span class="pill good">✓ Done</span>`;
   const callsH=calls.map(c=>{
     if(c.src==="manual")return `<div class="entry"><div><strong>${esc(c.agent||"Agent")}</strong> <span class="muted">· ${esc(c.type)}</span> <span class="pill">added by hand</span>${c.impact?` <span class="pill good">${money(c.impact)}</span>`:""}
       <div class="meta">${esc(c.outcome)}${c.time?" · "+esc(c.time):""}${c.note?" · "+esc(c.note):""}</div></div>${canWrite?`<button class="x" data-act="delcall" data-i="${c.idx}" aria-label="Remove call">×</button>`:""}</div>`;
