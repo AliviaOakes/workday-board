@@ -264,6 +264,12 @@ tr.today td{background:var(--accent-soft)}
 .rp-list li.no{color:var(--muted)}
 .rp-hours td:first-child{font-family:var(--mono);white-space:nowrap;color:var(--ink-2)}
 .rp-text{white-space:pre-wrap;margin:0}
+.ccall{border-top:1px solid var(--line);padding:10px 0;display:flex;flex-direction:column;gap:5px}
+.ccall:first-of-type{border-top:none;padding-top:0}
+.ccall-h{display:grid;grid-template-columns:64px minmax(0,1fr) auto;gap:8px;align-items:baseline}
+.ccall-sum{background:var(--surface-2);border-radius:6px;padding:6px 8px;color:var(--ink-2)}
+.ccall-f{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+details>summary{list-style:revert}
 .ro-note{font-size:12px;color:var(--muted)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -454,7 +460,7 @@ let FINC=Object.fromEntries(FIN_CATS.map(c=>[c.id,c.name]));
 const FREQ=[["monthly","Monthly"],["quarterly","Quarterly"],["variable","Varies"],["once","One-time"]];
 const COLORS=[["s1","Blue"],["s2","Orange"],["s3","Teal"],["s4","Yellow"],["s5","Pink"],["s6","Green"],["s7","Violet"],["s8","Red"]];
 const DEF_LISTS={cats:CATS.map(c=>({id:c.id,name:c.name,color:c.v.slice(2)})),callTypes:CALL_TYPES.slice(),outcomes:OUTCOMES.slice(),sideTypes:SIDE_TYPES.slice(),bugTypes:BUG_TYPES.slice(),finCats:FIN_CATS.map(c=>({id:c.id,name:c.name})),groups:["Morning sweep","Through the day","Due today","Wrap-up"]};
-const DEF_SECTIONS={tabs:{week:true,bugs:true,personal:true,home:true,report:true},today:{bugs:true,calls:true,side:true,eod:true},report:{personal:true,hourly:true}};
+const DEF_SECTIONS={tabs:{week:true,bugs:true,personal:true,home:true,report:true},today:{bugs:true,calls:true,helpdesk:true,side:true,eod:true},report:{personal:true,hourly:true}};
 function catInfo(id){return CAT[id]||{id,name:id?"Removed category":"Open",v:id?"--muted":"--empty"};}
 function on(path){const v=getPath(doc("config").sections||{},path);return v!==false;}
 function applyLists(){
@@ -625,24 +631,48 @@ function blockFor(date,h){
   const w=dow(date);const cfg=doc("config");
   return cfg.blocks.find(b=>b.days.includes(w)&&h>=b.start&&h<b.end)||null;
 }
+function callInHour(date,h){
+  const sd=syncDoc(date);if(!sd||!sd.calls)return null;
+  const hs=parse(date);hs.setHours(h,0,0,0);const he=new Date(hs.getTime()+3600000);
+  return sd.calls.find(c=>{if(c.status!=="done"&&c.status!=="live")return false;const a=new Date(c.start||c.schedStart),b=c.end?new Date(c.end):new Date(a.getTime()+(c.minutes||30)*60000);
+    return Math.min(b,he)-Math.max(a,hs)>=10*60000;})||null;
+}
 function hourCat(d,date,h){
   const e=(d&&d.hours&&d.hours[h])||{};
   if(e.cat)return{cat:e.cat,logged:true};
   const b=blockFor(date,h);
   if(e.note&&b)return{cat:b.cat,logged:true};
+  const ci=callInHour(date,h);if(ci){const cc=CAT.calls?"calls":(b?b.cat:null);if(cc)return{cat:cc,logged:true,auto:ci};}
   return{cat:b?b.cat:null,logged:false};
 }
 function tasksFor(date){const w=dow(date);return doc("config").tasks.filter(t=>t.days.includes(w));}
+function syncDoc(date){return cache["sync/"+date]||null;}
+function adminNames(){return (cache["sync/intercom-admins"]||{}).names||{};}
+function myAdminId(){const c=doc("config");if(c.intercomMe)return String(c.intercomMe);const n=adminNames();const k=Object.keys(n).find(id=>/alivia/i.test(n[id]));return k||"";}
+const fmtT=iso=>iso?new Date(iso).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"}):"";
+function allCalls(date){
+  const d=dayDoc(date)||{};const sd=syncDoc(date);const X=d.callx||{};const out=[];
+  ((sd&&sd.calls)||[]).forEach(c=>{const x=X[c.key]||{};
+    out.push({src:"zoom",key:c.key,agent:c.agent||c.title,email:c.agentEmail||"",reason:c.reason||"",summary:c.summary||"",rec:c.recordingUrl||"",
+      status:c.status||"done",start:c.start||c.schedStart,schedStart:c.schedStart,minutes:c.minutes,
+      type:x.type||c.typeGuess||"",outcome:x.outcome||"",impact:x.impact||"",note:x.note||"",time:fmtT(c.start||c.schedStart)});});
+  (d.calls||[]).forEach((c,i)=>out.push(Object.assign({src:"manual",idx:i,status:"done"},c)));
+  return out;
+}
+const countsAsCall=c=>c.status==="done"||c.status==="live";
 function dayStats(date){
   const d=dayDoc(date)||{};
   const tasks=tasksFor(date);
   const done=tasks.filter(t=>d.checks&&d.checks[t.id]).length;
   let logged=0;const byCat={};
   HOURS.forEach(h=>{const r=hourCat(d,date,h);if(r.logged){logged++;byCat[r.cat]=(byCat[r.cat]||0)+1;}});
-  const calls=(d.calls||[]);
+  const calls=allCalls(date).filter(countsAsCall);
   const impact=calls.reduce((s,c)=>s+(parseFloat(c.impact)||0),0);
   const resolved=calls.filter(c=>c.outcome==="Resolved").length;
-  return{tasks:tasks.length,done,logged,byCat,calls:calls.length,resolved,impact,side:(d.side||[]).length};
+  const sd=syncDoc(date);const ic=sd&&sd.intercom;const me=myAdminId();
+  const mine=ic&&me?((ic.byAdmin||[]).find(a=>String(a.id)===me)||{}):{};
+  const noShows=allCalls(date).filter(c=>c.status==="no-show").length;
+  return{tasks:tasks.length,done,logged,byCat,calls:calls.length,resolved,impact,side:(d.side||[]).length,chats:ic?(mine.handled||0):null,teamChats:ic?ic.handled||0:null,noShows};
 }
 function nextDeadline(){
   const now=new Date();const out=[];
@@ -670,7 +700,7 @@ const isReal=p=>cache[p]&&!blanks.has(cache[p]);
 function ensureLoaded(){
   if(!db)return;
   const mon=mondayOf(cur);
-  const want=["days/"+cur,"weeks/"+mon,"finance/"+finMonth,"finance/"+shiftMonth(finMonth,-1)].concat([0,1,2,3,4,5,6].map(i=>"days/"+addDays(mon,i)));
+  const want=["days/"+cur,"sync/"+cur,"weeks/"+mon,"finance/"+finMonth,"finance/"+shiftMonth(finMonth,-1)].concat([0,1,2,3,4,5,6].map(i=>"days/"+addDays(mon,i))).concat([0,1,2,3,4,5,6].map(i=>"sync/"+addDays(mon,i)));
   want.forEach(p=>{
     if(fetched[p]||isReal(p))return;fetched[p]=true;
     db.doc(p).get().then(s=>{if(s.exists&&!dirty[p]&&!isReal(p)){cache[p]=JSON.parse(JSON.stringify(s.data()));scheduleRender();}}).catch(()=>{fetched[p]=false;});
@@ -706,6 +736,7 @@ function rToday(){
     const e=(d.hours&&d.hours[hh])||{};const b=blockFor(cur,hh);
     return `<div class="hour"><div class="t">${hLabel(hh)}${isToday&&nowH===hh?`<br><span class="now">NOW</span>`:""}</div><div>
       <div class="plan">${b?sw(b.cat)+`<span>${esc(b.label)}</span>`:`<span>${weekend?"Weekend":"Open hour"}</span>`}</div>
+      ${(()=>{const ci=callInHour(cur,hh);return ci?`<div class="small" style="margin:-2px 0 6px;color:var(--ink-2)">📞 Auto-logged from Zoom: call with <strong>${esc(ci.agent||ci.title)}</strong>${ci.minutes?` · ${ci.minutes} min`:""}</div>`:"";})()}
       <div class="hrow">${catSelect("hours."+hh+".cat",e.cat||"","day",b?"Same as plan":"Category")}
       <textarea rows="1" data-k="day" data-p="hours.${hh}.note" placeholder="What got done this hour?" aria-label="Notes for ${hLabel(hh)}"${dis()}>${esc(e.note)}</textarea></div>
     </div></div>`;}).join("");
@@ -714,9 +745,22 @@ function rToday(){
   let checks=Object.keys(groups).length?Object.entries(groups).map(([g,ts])=>`<div class="group-h">${esc(g)}</div>`+ts.map(t=>{const on=!!(d.checks&&d.checks[t.id]);return `<label class="chk${on?" done":""}"><input type="checkbox" data-k="day" data-p="checks.${t.id}"${on?" checked":""}${dis()}><span class="lbl">${esc(t.label)}</span>${sw(t.cat)}</label>`;}).join("")).join(""):`<p class="muted">No work tasks scheduled for ${DNL[w]}. See the Personal tab.</p>`;
   if(w===3){const wk=doc("week");checks+=`<div class="group-h">Migration handoff</div><p class="small" style="margin:0 6px">${wk.mig&&wk.mig.sent?`<span class="pill good">✓ Sent to Telgorithm</span>`:`<span class="pill warn">⚠ Due to Telgorithm by 6:00 PM</span>`} Track it on the Week tab.</p>`;}
   // calls
-  const calls=d.calls||[];
-  const callsH=calls.map((c,i)=>`<div class="entry"><div><strong>${esc(c.agent||"Agent")}</strong> <span class="muted">· ${esc(c.type)}</span>${c.impact?` <span class="pill good">${money(c.impact)}</span>`:""}
-    <div class="meta">${esc(c.outcome)}${c.time?" · "+esc(c.time):""}${c.note?" · "+esc(c.note):""}</div></div>${canWrite?`<button class="x" data-act="delcall" data-i="${i}" aria-label="Remove call">×</button>`:""}</div>`).join("")||`<p class="muted small" style="margin:0">No calls logged yet. Each call you log adds to the week's totals.</p>`;
+  const calls=allCalls(cur);const sdoc=syncDoc(cur);
+  const stPill=st=>st==="upcoming"?`<span class="pill">Upcoming</span>`:st==="live"?`<span class="pill acc">● In progress</span>`:st==="no-show"?`<span class="pill warn">⚠ No-show</span>`:`<span class="pill good">✓ Done</span>`;
+  const callsH=calls.map(c=>{
+    if(c.src==="manual")return `<div class="entry"><div><strong>${esc(c.agent||"Agent")}</strong> <span class="muted">· ${esc(c.type)}</span> <span class="pill">added by hand</span>${c.impact?` <span class="pill good">${money(c.impact)}</span>`:""}
+      <div class="meta">${esc(c.outcome)}${c.time?" · "+esc(c.time):""}${c.note?" · "+esc(c.note):""}</div></div>${canWrite?`<button class="x" data-act="delcall" data-i="${c.idx}" aria-label="Remove call">×</button>`:""}</div>`;
+    const kp="callx."+c.key;const editable=canWrite&&c.status!=="upcoming";
+    return `<div class="ccall"><div class="ccall-h"><span class="mono small muted">${esc(c.time)}</span><div><strong>${esc(c.agent)}</strong>${c.minutes?` <span class="small muted">· ${c.minutes} min</span>`:""}</div>${stPill(c.status)}</div>
+      ${c.reason?`<div class="small"><span class="muted">Booked for:</span> ${esc(c.reason)}</div>`:""}
+      ${c.summary?`<div class="small ccall-sum">${esc(c.summary)}</div>`:(c.status==="done"&&cur===TODAY?`<div class="small muted">Summary appears after Zoom finishes the transcript.</div>`:"")}
+      <div class="small" style="display:flex;gap:10px;flex-wrap:wrap">${c.rec?`<a href="${esc(c.rec)}" target="_blank" rel="noopener">▶ Watch recording</a>`:""}${c.email?`<span class="muted">${esc(c.email)}</span>`:""}</div>
+      ${c.status!=="upcoming"?`<div class="ccall-f">
+        <select data-k="day" data-p="${kp}.type" aria-label="Call type"${editable?"":" disabled"}><option value="">Type</option>${CALL_TYPES.concat(c.type&&!CALL_TYPES.includes(c.type)?[c.type]:[]).map(t=>`<option${t===c.type?" selected":""}>${esc(t)}</option>`).join("")}</select>
+        <select data-k="day" data-p="${kp}.outcome" aria-label="Outcome"${editable?"":" disabled"}><option value="">Outcome</option>${OUTCOMES.map(t=>`<option${t===c.outcome?" selected":""}>${esc(t)}</option>`).join("")}</select>
+        <input type="number" min="0" step="0.01" data-k="day" data-p="${kp}.impact" data-num="1" value="${esc(c.impact)}" placeholder="$ won / saved" aria-label="Revenue won or saved"${editable?"":" disabled"}>
+        <input type="text" data-k="day" data-p="${kp}.note" value="${esc(c.note)}" placeholder="Your note" aria-label="Note"${editable?"":" disabled"}></div>`:""}</div>`;}).join("")||`<p class="muted small" style="margin:0">${sdoc?"No calls on the calendar today.":"Calls from Zoom and your calendar appear here after the next hourly sync."} You can also add one by hand below.</p>`;
+  const otherEv=((sdoc&&sdoc.events)||[]).filter(e=>!e.zoom);
   const callForm=canWrite?`<div class="rowform">
     <input type="text" id="c-agent" placeholder="Agent name or ID">
     <select id="c-type">${CALL_TYPES.map(t=>`<option>${t}</option>`).join("")}</select>
@@ -733,7 +777,10 @@ function rToday(){
     <div class="stack">
       <section class="panel"><div class="panel-h"><h2>Today's checklist</h2><span class="pill ${pct===100?"good":"acc"}">${st.done} of ${st.tasks}</span></div><div class="checks">${checks}</div></section>
       ${on("today.bugs")&&on("tabs.bugs")?rBugMini():""}
-      ${on("today.calls")?`<section class="panel"><div class="panel-h"><div><span class="eyebrow">Shows the value of each call</span><h2>Call log</h2></div><span class="small muted mono">${calls.length} calls · ${money(st.impact)}</span></div>${callsH}${callForm}</section>`:""}
+      ${on("today.helpdesk")?rHelpdesk(cur):""}
+      ${on("today.calls")?`<section class="panel"><div class="panel-h"><div><span class="eyebrow">From Zoom + Google Calendar · ${syncStamp(cur)}</span><h2>Calls & calendar</h2></div><span class="small muted mono">${st.calls} calls · ${money(st.impact)}</span></div>${callsH}
+        ${otherEv.length?`<div class="group-h" style="margin-top:12px">Other events today</div>${otherEv.map(e=>`<div class="entry" style="grid-template-columns:auto minmax(0,1fr)"><span class="mono small muted">${esc(e.allDay?"All day":fmtT(e.start))}</span><span>${esc(e.title)}</span></div>`).join("")}`:""}
+        <details style="margin-top:10px"><summary class="small" style="cursor:pointer;color:var(--ink-2)">Add a call that isn't on the calendar</summary>${callForm}</details></section>`:""}
       ${on("today.side")?`<section class="panel"><div class="panel-h"><div><span class="eyebrow">Side tasks</span><h2>Unplanned work</h2></div><span class="small muted mono">${side.length}</span></div>${sideH}${sideForm}</section>`:""}
       ${on("today.eod")?`<section class="panel"><div class="panel-h"><h2>End of day</h2><button class="btn sm" data-tab="report">View day report →</button></div>
         <label class="eyebrow" for="wins">Wins</label><textarea id="wins" rows="2" data-k="day" data-p="wins" placeholder="What moved forward today?"${dis()}>${esc(d.wins)}</textarea>
@@ -801,11 +848,11 @@ function rWeek(){
   // stats table
   const stats=days.map(ds=>({ds,...dayStats(ds)}));
   const tot=stats.reduce((a,s)=>({calls:a.calls+s.calls,impact:a.impact+s.impact,logged:a.logged+s.logged,side:a.side+s.side,done:a.done+s.done,tasks:a.tasks+s.tasks,resolved:a.resolved+s.resolved}),{calls:0,impact:0,logged:0,side:0,done:0,tasks:0,resolved:0});
-  const tbl=`<div class="tbl-wrap"><table><thead><tr><th>Day</th><th class="num">Checklist</th><th class="num">Hours logged</th><th class="num">Calls</th><th class="num">Resolved</th><th class="num">$ won / saved</th><th class="num">Side tasks</th></tr></thead><tbody>
-    ${stats.map(s=>`<tr class="${s.ds===TODAY?"today":""}"><td>${DN[dow(s.ds)]} <span class="muted small">${fmtShort(s.ds)}</span></td><td class="num">${s.tasks?s.done+"/"+s.tasks:"–"}</td><td class="num">${s.logged}</td><td class="num">${s.calls}</td><td class="num">${s.resolved}</td><td class="num">${money(s.impact)}</td><td class="num">${s.side}</td></tr>`).join("")}
-    <tr><td><strong>Week</strong></td><td class="num"><strong>${tot.tasks?Math.round(tot.done/tot.tasks*100)+"%":"–"}</strong></td><td class="num"><strong>${tot.logged}</strong></td><td class="num"><strong>${tot.calls}</strong></td><td class="num"><strong>${tot.resolved}</strong></td><td class="num"><strong>${money(tot.impact)}</strong></td><td class="num"><strong>${tot.side}</strong></td></tr></tbody></table></div>`;
+  const tbl=`<div class="tbl-wrap"><table><thead><tr><th>Day</th><th class="num">Checklist</th><th class="num">Hours logged</th><th class="num">Calls</th><th class="num">Chats</th><th class="num">Resolved</th><th class="num">$ won / saved</th><th class="num">Side tasks</th></tr></thead><tbody>
+    ${stats.map(s=>`<tr class="${s.ds===TODAY?"today":""}"><td>${DN[dow(s.ds)]} <span class="muted small">${fmtShort(s.ds)}</span></td><td class="num">${s.tasks?s.done+"/"+s.tasks:"–"}</td><td class="num">${s.logged}</td><td class="num">${s.calls}</td><td class="num">${s.chats==null?"–":s.chats}</td><td class="num">${s.resolved}</td><td class="num">${money(s.impact)}</td><td class="num">${s.side}</td></tr>`).join("")}
+    <tr><td><strong>Week</strong></td><td class="num"><strong>${tot.tasks?Math.round(tot.done/tot.tasks*100)+"%":"–"}</strong></td><td class="num"><strong>${tot.logged}</strong></td><td class="num"><strong>${tot.calls}</strong></td><td class="num"><strong>${stats.reduce((a,x)=>a+(x.chats||0),0)}</strong></td><td class="num"><strong>${tot.resolved}</strong></td><td class="num"><strong>${money(tot.impact)}</strong></td><td class="num"><strong>${tot.side}</strong></td></tr></tbody></table></div>`;
   // call mix
-  const mix={};days.forEach(ds=>{((dayDoc(ds)||{}).calls||[]).forEach(c=>{mix[c.type]=mix[c.type]||{n:0,imp:0};mix[c.type].n++;mix[c.type].imp+=parseFloat(c.impact)||0;});});
+  const mix={};days.forEach(ds=>{allCalls(ds).filter(countsAsCall).forEach(c=>{const ty=c.type||"Not set";mix[ty]=mix[ty]||{n:0,imp:0};mix[ty].n++;mix[ty].imp+=parseFloat(c.impact)||0;});});
   const mixH=Object.keys(mix).length?`<table><thead><tr><th>Call type</th><th class="num">Calls</th><th class="num">$ won / saved</th></tr></thead><tbody>${Object.entries(mix).sort((a,b)=>b[1].n-a[1].n).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="num">${v.n}</td><td class="num">${money(v.imp)}</td></tr>`).join("")}</tbody></table>`:`<p class="muted small">Calls logged on the Today tab roll up here by type, so you can see which kinds of calls bring in or save revenue.</p>`;
   // migration pipeline
   const m=wk.mig||{};
@@ -956,6 +1003,23 @@ Reported by: ${b.reporter||"n/a"}${b.affected?" · Agents affected: "+b.affected
 What's happening:
 ${b.details||"n/a"}
 ${b.workaround?"\nWorkaround given: "+b.workaround+"\n":""}${b.devnotes?"\nNotes: "+b.devnotes+"\n":""}`;}
+function syncStamp(date){const sd=syncDoc(date);return sd&&sd.syncedAt?"synced "+fmtT(sd.syncedAt):"waiting for first sync";}
+function rHelpdesk(date){
+  const sd=syncDoc(date);const ic=sd&&sd.intercom;const names=adminNames();const me=myAdminId();
+  if(!ic)return `<section class="panel"><div class="panel-h"><div><span class="eyebrow">Intercom · ${syncStamp(date)}</span><h2>Help desk</h2></div></div><p class="muted small" style="margin:0">Chat counts for you and the team appear after the next hourly sync.</p></section>`;
+  const rows=(ic.byAdmin||[]).slice().sort((a,b)=>(b.handled||0)-(a.handled||0));
+  const mine=rows.find(a=>String(a.id)===me)||{};
+  const mm=v=>v==null?"–":v<60?Math.round(v)+" min":(v/60).toFixed(1)+" h";
+  return `<section class="panel"><div class="panel-h"><div><span class="eyebrow">Intercom · ${syncStamp(date)}</span><h2>Help desk</h2></div><span class="pill ${ic.waiting>0?"warn":"good"}">${ic.waiting||0} waiting on a reply</span></div>
+    <div class="kpis" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:12px">
+      <div class="kpi"><span class="l">Your chats</span><span class="v">${mine.handled||0}</span><span class="l">${mine.closed||0} closed</span></div>
+      <div class="kpi"><span class="l">Team chats</span><span class="v">${ic.handled||0}</span><span class="l">${ic.newToday||0} new today</span></div>
+      <div class="kpi"><span class="l">Closed</span><span class="v">${ic.closed||0}</span><span class="l">by the team</span></div>
+      <div class="kpi"><span class="l">First reply</span><span class="v" style="font-size:20px">${mm(ic.medianFirstReplyMin)}</span><span class="l">median</span></div></div>
+    ${rows.length?`<div class="tbl-wrap"><table><thead><tr><th>Teammate</th><th class="num">Chats</th><th class="num">Assigned now</th><th class="num">Closed</th><th class="num">First reply</th></tr></thead><tbody>
+      ${rows.map(a=>`<tr${String(a.id)===me?' class="today"':""}><td>${esc(names[a.id]||a.name||"Teammate "+a.id)}</td><td class="num">${a.handled||0}</td><td class="num">${a.assigned||0}</td><td class="num">${a.closed||0}</td><td class="num">${mm(a.medianFirstReplyMin)}</td></tr>`).join("")}</tbody></table></div>`:""}
+  </section>`;
+}
 function rBugMini(){
   const ob=openBugs();
   return `<section class="panel"><div class="panel-h"><div><span class="eyebrow">Carries over until done</span><h2>Open bug reports</h2></div><span class="pill ${ob.some(b=>b.sev==="crit")?"crit":ob.length?"warn":"good"}">${ob.length} open</span></div>
@@ -1106,13 +1170,14 @@ function reportData(){
   const moved=bugs.filter(b=>(b.history||[]).some(h=>h.at.slice(0,10)===cur&&h.status!=="Open"&&!isDone(h.status)));
   const openNow=openBugs();
   const wk=cache["weeks/"+mondayOf(cur)]||{};
-  const byCallType={};(d.calls||[]).forEach(c=>{byCallType[c.type]=byCallType[c.type]||{n:0,imp:0};byCallType[c.type].n++;byCallType[c.type].imp+=parseFloat(c.impact)||0;});
+  const byCallType={};allCalls(cur).filter(countsAsCall).forEach(c=>{byCallType[c.type]=byCallType[c.type]||{n:0,imp:0};byCallType[c.type].n++;byCallType[c.type].imp+=parseFloat(c.impact)||0;});
   return{d,st,done,open,hours,opened,closed,moved,openNow,wk,byCallType};
 }
 function rReport(){
   const R=reportData(),{d,st}=R;const cfg=doc("config");const w=dow(cur);
   const catRows=Object.entries(st.byCat).sort((a,b)=>b[1]-a[1]);const cmax=Math.max(1,...catRows.map(x=>x[1]));
-  const callsT=(d.calls||[]).length?`<div class="tbl-wrap"><table><thead><tr><th>Agent</th><th>Type</th><th>Outcome</th><th class="num">$ won / saved</th></tr></thead><tbody>${d.calls.map(c=>`<tr><td>${esc(c.agent||"–")}${c.note?`<div class="small muted">${esc(c.note)}</div>`:""}</td><td>${esc(c.type)}</td><td>${esc(c.outcome)}</td><td class="num">${c.impact?money(c.impact):"–"}</td></tr>`).join("")}</tbody></table></div>`:`<p class="muted small" style="margin:0">No calls logged.</p>`;
+  const rc=allCalls(cur).filter(c=>c.status!=="upcoming");
+  const callsT=rc.length?`<div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Agent</th><th>Type</th><th>Outcome</th><th class="num">$ won / saved</th></tr></thead><tbody>${rc.map(c=>`<tr><td class="mono small">${esc(c.time||"")}</td><td><strong>${esc(c.agent||"–")}</strong>${c.status==="no-show"?' <span class="pill warn">No-show</span>':""}${c.reason?`<div class="small muted">Booked for: ${esc(c.reason)}</div>`:""}${c.summary?`<div class="small">${esc(c.summary)}</div>`:""}${c.note?`<div class="small muted">${esc(c.note)}</div>`:""}</td><td>${esc(c.type||"–")}</td><td>${esc(c.outcome||"–")}</td><td class="num">${c.impact?money(c.impact):"–"}</td></tr>`).join("")}</tbody></table></div>`:`<p class="muted small" style="margin:0">No calls logged.</p>`;
   const hl=d.health||{},g=cfg.goals||{};
   const stackDone=cfg.stack.filter(s=>d.stack&&d.stack[s.id]).length;
   const mig=R.wk.mig||{};
@@ -1131,7 +1196,7 @@ function rReport(){
       <div class="kpi"><span class="l">Checklist</span><span class="v">${st.done}<small>/${st.tasks}</small></span><span class="l">${st.tasks?Math.round(st.done/st.tasks*100):0}% done</span></div>
       <div class="kpi"><span class="l">Hours logged</span><span class="v">${st.logged}<small>/10</small></span><span class="l">8 AM – 6 PM</span></div>
       <div class="kpi"><span class="l">Calls</span><span class="v">${st.calls}</span><span class="l">${st.resolved} resolved on the call</span></div>
-      <div class="kpi"><span class="l">Revenue won or saved</span><span class="v">${money(st.impact)}</span><span class="l">from calls</span></div>
+      <div class="kpi"><span class="l">Chats (you · team)</span><span class="v">${st.chats==null?"–":st.chats}<small>${st.teamChats==null?"":" · "+st.teamChats}</small></span><span class="l">${money(st.impact)} won or saved</span></div>
       <div class="kpi"><span class="l">Bugs</span><span class="v">${R.opened.length}<small> new</small></span><span class="l">${R.closed.length} closed · ${R.openNow.length} open total</span></div></div>
     <section class="rp-sec"><h3>Where the time went</h3>
       <div class="strip">${R.hours.map(x=>`<div style="${x.cat?`background:var(${catInfo(x.cat).v})`:""}" title="${hLabel(x.h)}: ${x.cat?esc(catInfo(x.cat).name):"Not logged"}"></div>`).join("")}</div>
@@ -1142,8 +1207,9 @@ function rReport(){
       <section class="rp-sec"><h3>Checklist · ${st.done} of ${st.tasks}</h3>${R.done.length||R.open.length?`<ul class="rp-list">${R.done.map(t=>`<li>✓ ${esc(t.label)}</li>`).join("")}${R.open.map(t=>`<li class="no">○ ${esc(t.label)}</li>`).join("")}</ul>`:`<p class="muted small" style="margin:0">No tasks scheduled.</p>`}</section>
       <section class="rp-sec"><h3>Unplanned work · ${(d.side||[]).length}</h3>${(d.side||[]).length?`<ul class="rp-list">${d.side.map(x=>`<li><strong>${esc(x.type)}</strong>${x.note?` · ${esc(x.note)}`:""}</li>`).join("")}</ul>`:`<p class="muted small" style="margin:0">None logged.</p>`}</section>
     </div>
-    <section class="rp-sec"><h3>Calls · ${st.calls}${st.impact?` · ${money(st.impact)} won or saved`:""}</h3>${callsT}
+    <section class="rp-sec"><h3>Calls · ${st.calls}${st.noShows?` · ${st.noShows} no-show${st.noShows===1?"":"s"}`:""}${st.impact?` · ${money(st.impact)} won or saved`:""}</h3>${callsT}
       ${Object.keys(R.byCallType).length>1?`<p class="small muted" style="margin:8px 0 0">${Object.entries(R.byCallType).map(([k,v])=>`${esc(k)}: ${v.n}${v.imp?` (${money(v.imp)})`:""}`).join(" · ")}</p>`:""}</section>
+    ${syncDoc(cur)&&syncDoc(cur).intercom?`<section class="rp-sec"><h3>Help desk (Intercom)</h3>${rHelpdesk(cur).replace(/^<section class="panel">/,"<div>").replace(/<\/section>$/,"</div>")}</section>`:""}
     <div class="rp-cols">
       <section class="rp-sec"><h3>Bug reports</h3>
         ${R.opened.length?`<p class="small" style="margin:0 0 4px"><strong>Opened today</strong></p><ul class="rp-list">${R.opened.map(bugLine).join("")}</ul>`:""}
@@ -1171,7 +1237,9 @@ function reportText(){
   L.push("WHERE THE TIME WENT");Object.entries(st.byCat).sort((a,b)=>b[1]-a[1]).forEach(([c,n])=>L.push(`  ${catInfo(c).name}: ${n} h`));if(!Object.keys(st.byCat).length)L.push("  No hours logged");L.push("");
   if(on("report.hourly")){L.push("HOUR BY HOUR");R.hours.forEach(x=>L.push(`  ${hLabel(x.h).padEnd(6)} ${x.cat?catInfo(x.cat).name:"Not logged"}${x.note?" — "+x.note:""}`));L.push("");}
   L.push(`CHECKLIST (${st.done}/${st.tasks})`);R.done.forEach(t=>L.push("  ✓ "+t.label));R.open.forEach(t=>L.push("  ○ "+t.label));L.push("");
-  L.push(`CALLS (${st.calls})`);(d.calls||[]).forEach(c=>L.push(`  ${c.agent||"Agent"} · ${c.type} · ${c.outcome}${c.impact?" · "+money(c.impact):""}${c.note?" · "+c.note:""}`));if(!(d.calls||[]).length)L.push("  None");L.push("");
+  const rcs=allCalls(cur).filter(c=>c.status!=="upcoming");
+  L.push(`CALLS (${st.calls})`);rcs.forEach(c=>{L.push(`  ${c.time||""} ${c.agent||"Agent"}${c.status==="no-show"?" (no-show)":""} · ${c.type||"–"} · ${c.outcome||"–"}${c.impact?" · "+money(c.impact):""}`);if(c.reason)L.push("     Booked for: "+c.reason);if(c.summary)L.push("     Summary: "+c.summary);if(c.note)L.push("     Note: "+c.note);});if(!rcs.length)L.push("  None");L.push("");
+  const sic=syncDoc(cur)&&syncDoc(cur).intercom;if(sic){const nm=adminNames();L.push("HELP DESK (INTERCOM)",`  Team chats: ${sic.handled||0} · new today: ${sic.newToday||0} · closed: ${sic.closed||0} · waiting: ${sic.waiting||0}`);(sic.byAdmin||[]).forEach(a=>L.push(`  ${nm[a.id]||a.name||a.id}: ${a.handled||0} chats, ${a.closed||0} closed`));L.push("");}
   L.push(`UNPLANNED WORK (${(d.side||[]).length})`);(d.side||[]).forEach(x=>L.push(`  ${x.type}${x.note?" · "+x.note:""}`));if(!(d.side||[]).length)L.push("  None");L.push("");
   L.push("BUG REPORTS");R.opened.forEach(b=>L.push(`  Opened: ${bugNo(b)} ${b.title} (${b.type})`));R.closed.forEach(b=>L.push(`  Closed: ${bugNo(b)} ${b.title}`));L.push(`  ${R.openNow.length} open in total`,"");
   L.push("WINS",d.wins?d.wins.replace(/^/gm,"  "):"  —","","BLOCKERS / CARRY OVER",d.blockers?d.blockers.replace(/^/gm,"  "):"  —");
@@ -1216,8 +1284,11 @@ function rSetSections(){
       ${tg("tabs.report","Report","One-page breakdown of any day")}${tg("tabs.week","Week","Weekly rhythm, totals, migrations, 10DLC, files, disputes")}
       ${tg("tabs.bugs","Bug reports","Ticket tracker")}${tg("tabs.personal","Personal","Routine, health, shopping, meal prep")}${tg("tabs.home","Home","Upkeep and money")}</div></section>
     <section class="panel"><h2 style="margin-bottom:8px">On the Today tab</h2><div class="checks">
-      ${tg("today.bugs","Open bug reports","Top five open tickets")}${tg("today.calls","Call log","Calls with outcome and revenue")}
-      ${tg("today.side","Unplanned work","Side tasks")}${tg("today.eod","End of day","Wins and blockers")}</div></section>
+      ${tg("today.bugs","Open bug reports","Top five open tickets")}${tg("today.calls","Calls & calendar","Zoom calls, calendar, outcomes and revenue")}
+      ${tg("today.helpdesk","Help desk","Intercom chats for you and the team")}${tg("today.side","Unplanned work","Side tasks")}${tg("today.eod","End of day","Wins and blockers")}</div></section>
+    <section class="panel"><h2 style="margin-bottom:8px">Intercom</h2><label class="small" for="ic-me">Which teammate are you?</label>
+      <select id="ic-me" data-k="config" data-p="intercomMe" style="width:100%;margin-top:4px"${dis()}><option value="">Detect automatically${myAdminId()?" ("+esc(adminNames()[myAdminId()]||"")+")":""}</option>${Object.entries(adminNames()).map(([id,n])=>`<option value="${esc(id)}"${String(doc("config").intercomMe||"")===id?" selected":""}>${esc(n)}</option>`).join("")}</select>
+      <p class="small muted" style="margin:8px 0 0">Names fill in from Intercom after the first sync.</p></section>
     <section class="panel"><h2 style="margin-bottom:8px">In the day report</h2><div class="checks">
       ${tg("report.hourly","Hour-by-hour notes","Each hour's category and note")}${tg("report.personal","Personal & health","Routine, water, calories, steps, workout")}</div></section>
   </div>`;
@@ -1437,6 +1508,7 @@ render();
   db.collection("config").onSnapshot(s=>{s.docs.forEach(x=>take(x,"config/"+x.id));scheduleRender();},onErr);
   db.collection("bugs").onSnapshot(s=>{s.docChanges().forEach(ch=>{const p="bugs/"+ch.doc.id;if(ch.type==="removed"){if(!dirty[p])delete cache[p];}else take(ch.doc,p);});scheduleRender();},onErr);
   db.collection("finance").orderBy("month","desc").limit(24).onSnapshot(s=>{s.docs.forEach(x=>take(x,"finance/"+x.id));scheduleRender();},onErr);
+  db.collection("sync").orderBy("date","desc").limit(60).onSnapshot(s=>{s.docs.forEach(x=>take(x,"sync/"+x.id));scheduleRender();},onErr);
   db.collection("lists").onSnapshot(s=>{s.docs.forEach(x=>take(x,"lists/"+x.id));scheduleRender();},onErr);
 })();
 })();
