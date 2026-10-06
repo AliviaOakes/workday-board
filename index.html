@@ -59,7 +59,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .top{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between;padding-bottom:14px;border-bottom:1px solid var(--line-2)}
 .top .who{display:flex;flex-direction:column;gap:4px}
 .datenav{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
-.datenav input[type=date]{background:var(--surface);border:1px solid var(--line-2);border-radius:6px;padding:6px 8px}
+.datenav input[type=date]{background:var(--surface);border:1px solid var(--line-2);border-radius:6px;padding:6px 8px;width:auto}
 .btn{background:var(--surface);border:1px solid var(--line-2);border-radius:6px;padding:6px 11px;cursor:pointer;line-height:1.3}
 .btn:hover{background:var(--surface-2)}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);font-weight:500}
@@ -313,7 +313,7 @@ gate.innerHTML=`<div class="gate-card">
 const gcss=document.createElement("style");
 gcss.textContent=`#gate{position:fixed;inset:0;z-index:50;background:var(--ground);display:grid;place-items:center;padding:16px}
 #gate .gate-card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:28px;max-width:400px;width:100%}
-.who-bar{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted)}`;
+.who-bar{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted)}.who-bar .btn{padding:2px 8px;font-size:12px}`;
 document.head.appendChild(gcss);
 document.body.appendChild(gate);
 const $=id=>document.getElementById(id);
@@ -333,14 +333,19 @@ function showDenied(email){
   const b=document.createElement("button");b.className="btn";b.textContent="Use a different email";b.style.marginTop="12px";
   b.onclick=async()=>{await sb.auth.signOut();location.reload();};$("g-err").replaceWith(b);
 }
-async function onSession(session){
-  if(!session||member)return;
+let checking=null;
+function onSession(session){
+  if(!session||member)return checking;
+  if(!checking)checking=checkMember(session).finally(()=>{if(!member)checking=null;});
+  return checking;
+}
+async function checkMember(session){
   const email=(session.user.email||"").toLowerCase();
   const {data,error}=await sb.from("members").select("email,name,role").eq("email",email).maybeSingle();
   if(error||!data){showDenied(email);return;}
   member=data;gate.remove();
-  const top=document.querySelector(".top .datenav");
-  if(top){const w=document.createElement("span");w.className="who-bar";w.innerHTML=`<span>${(data.name||email).replace(/</g,"&lt;")}</span>`;
+  const top=document.querySelector(".top .who");
+  if(top&&!document.querySelector(".who-bar")){const w=document.createElement("span");w.className="who-bar";w.innerHTML=`<span>Signed in as ${(data.name||email).replace(/</g,"&lt;")}</span>`;
     const so=document.createElement("button");so.className="btn ghost sm";so.textContent="Sign out";so.onclick=async()=>{await sb.auth.signOut();location.reload();};
     w.appendChild(so);top.appendChild(w);}
   resolveReady();
